@@ -1,0 +1,23 @@
+nvic0: IRQControllers.NVIC @ sysbus 0xE000E000
+    systickFrequency: 160000000
+    IRQ -> cpu0@0
+
+cpu0: CPU.CortexM @ sysbus
+    cpuType: "cortex-m33"
+    nvic: nvic0
+
+// SRAM4：LPDMA 缓冲区（真机 LPDMA 只能访问这块）
+sram4: Memory.MappedMemory @ sysbus 0x28000000
+    size: 0x4000
+
+lpuart1: UART.STM32F7_USART @ sysbus 0x46002400
+    frequency: 160000000
+    IRQ -> nvic0@66
+    // 每字节请求线：a) 原生挂起 LPDMA1_CH0 中断(114)  b) 供 GPIO 钩子搬运
+    ReceiveDmaRequest -> nvic0@114
+
+// LPDMA1 寄存器 stub（CH0 由钩子驱动）
+lpdma1: Python.PythonPeripheral @ sysbus 0x46025000
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_lpdma_stub.py"

@@ -1,0 +1,103 @@
+# ============================================================================
+# Renode 启动脚本 (.resc) —— STM32U585RITxQ 定制版
+# ----------------------------------------------------------------------------
+# .resc 文件语法说明（Renode Script / Monitor 命令）：
+#
+# 1. 它就是把你平时在 Renode Monitor 命令行里敲的命令按顺序写进文件，
+#    '#' 开头是注释；文件里可以用 $变量 保存路径/字符串。
+#    $ORIGIN 是内置变量 = 本脚本所在目录。
+#
+# 2. 常用命令：
+#    - mach create "名字"                     创建一台虚拟机器
+#    - machine LoadPlatformDescription @xxx   加载 .repl 平台描述
+#      （@ 前缀表示路径相对于本脚本；@platforms/... 则是 Renode 安装目录）
+#    - sysbus LoadELF @xxx.elf                把固件 ELF 加载到内存
+#      （ELF 自带地址信息；bin 则要用 LoadBinary $addr 形式指地址）
+#    - using sysbus                           之后可省略 "sysbus." 前缀
+#    - showAnalyzer usart1                    弹出 UART 波形/终端分析窗口
+#    - machine StartGdbServer 3333            开 GDB 服务，供 IDE 远程调试
+#    - start / pause / Reset                  运行/暂停/复位虚拟机
+#
+# 3. 用法：命令行执行  renode stm32u585_custom.resc
+#    然后在 Monitor 里输入 start（或取消下面 start 的注释一键运行）
+# ============================================================================
+
+# ---------------------------------------------------------------- 1. 建机器
+mach create "STM32U585"
+
+# 加载本目录下为本板定制的平台描述（GPIO/USART/SPI/I2C/ADC/TIM1/内存）
+machine LoadPlatformDescription @stm32u585_custom.repl
+
+# ---------------------------------------------------------------- 2. 加载固件
+# 编译工程后把 .elf 路径改到你的输出目录，例如 ../Debug/Flod_Array.elf
+sysbus LoadELF @../Debug/Flod_Array.elf
+
+# ---------------------------------------------------------------- 3. 串口观察
+# showAnalyzer [外设] ([显示名]) —— 打开一个终端窗口，实时显示该 UART 输出
+# 你的固件 printf 走 USART1（PB6=TX/PA10=RX），所以这里挂 usart1
+showAnalyzer sysbus.usart1
+
+# 再创建一个 TCP 终端：外部程序连 localhost 4444 即可收发 UART4 数据
+# 语法: emulation CreateServerSocketTerminal <端口> "<终端名>"
+emulation CreateServerSocketTerminal 4444 "uart4_tcp"
+# connector Connect <外设> <终端> —— 把 UART4 的 TX/RX 接到该 TCP 终端
+connector Connect sysbus.uart4 uart4_tcp
+
+# LPUART1：Analyzer 窗口看输出
+showAnalyzer sysbus.lpuart1
+
+# USART3：Analyzer 窗口看输出
+#showAnalyzer sysbus.usart3
+
+# LPUART1 再接一个 TCP 终端，用于向仿真机"输入"串口数据：
+# 外部程序（telnet / PuTTY(远程登录模式) / Python脚本）连 localhost:4445，
+# 发出的字节会进入 LPUART1 的 RX（固件经 LPDMA1 循环链表 DMA 接收），
+# 固件经 LPUART1 发出的数据也会原样出现在该连接上（双向）
+# 第三个参数 = telnetMode：false 为纯字节流（串口助手直连推荐）；
+# true 会先发 Telnet 协商字节（FF FD ...），部分工具会显示乱码或卡住
+emulation CreateServerSocketTerminal 4445 "lpuart1_tcp" false
+connector Connect sysbus.lpuart1 lpuart1_tcp
+
+# ---------------------------------------------------------------- 3.5 LPDMA1 仿真
+# LPUART1 RX 走 LPDMA1 CH0（循环链表）。Renode 无 DMA 模型，用钩子还原：
+#   每收到一个字节 -> 钩子从 RDR 搬一字节到 SRAM4 缓冲、减 BNDT、
+#   块完成置 TCF 并按 CLLR 回卷节点（见 lpuart1_lpdma_hook.py）
+# 帧结束事件不用脚本：固件用 RTOF 接收超时（RTOR=32bit，模型原生实现，真机同款），
+#   在 LPUART1_IRQHandler 的 USER CODE 段处理（见 stm32u5xx_it.c）
+# 每字节中断无需脚本：repl 里 ReceiveDmaRequest 已直连 nvic0@114
+sysbus.lpuart1 ReceiveDmaRequest AddStateChangedHook "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
+
+# 启动竞态看门狗：固件写 CR3 时若 DMA 已使能且 RDR 有滞留字节（数据比 DMAR 先到，
+# 请求线错过跳变），钩子强制搬走，防止 RXNE 悬死 → HAL"DMA模式"不读RDR → 中断风暴
+sysbus AddWatchpointHook 0x46002408 DoubleWord Write "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
+# USART3 RX（GPDMA1 CH0，IRQ29）：同样的钩子 + CR3 看门狗（usart3 CR3=0x40004808）
+sysbus.usart3 ReceiveDmaRequest AddStateChangedHook "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
+sysbus AddWatchpointHook 0x40004808 DoubleWord Write "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
+
+# USART3 再接一个 TCP 终端，用于向仿真机输入串口数据（可双向收发）：
+# 外部程序连 localhost:4446，发出的字节进入 USART3 RX（固件经 GPDMA1 CH0 DMA 接收）
+# telnetMode=false 纯字节流，串口助手直连推荐
+emulation CreateServerSocketTerminal 4446 "usart3_tcp" false
+connector Connect sysbus.usart3 usart3_tcp
+# ---------------------------------------------------------------- 4. GPIO 观察
+# LogPeripheralAccess 会在日志里记录对某外设寄存器的每次读写，
+# 配合 Tag 可看到 PC13 的 ODR(偏移 0x14) bit13 翻转
+#sysbus LogPeripheralAccess sysbus.gpioc
+
+# ---------------------------------------------------------------- 5. GDB 调试
+# 开 3333 端口的 GDB 服务；不自动 start，由 CubeIDE/VSCode 连接后接管
+machine StartGdbServer 3333
+#cpu ExecutionMode Paused     # 如需上电即暂停，取消本行注释
+
+echo ""
+echo "==========================================="
+echo " STM32U585 platform ready."
+echo " GDB Server : localhost:3333"
+echo " UART4 TCP  : localhost:4444"
+echo " LPUART1 TCP: localhost:4445 (可双向收发)"
+echo " USART3  TCP: localhost:4446 (可双向收发)"
+echo " 输入 start 开始运行"
+echo "==========================================="
+echo ""
+
+start

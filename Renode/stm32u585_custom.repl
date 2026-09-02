@@ -1,0 +1,206 @@
+// ============================================================================
+// Renode 平台描述文件 (.repl) —— STM32U585RITxQ (LQFP64) 教学注释版
+// ----------------------------------------------------------------------------
+// 【REPL 基础语法指南】
+// 1. 注释规范：必须使用双斜杠 "//"，REPL 不支持 "#" 或 "/* */" 注释。
+// 2. 声明外设：<别名>: <C#命名空间.类名> @ <总线名称> <内存地址|地址范围>
+//    - 示例：usart1: UART.STM32F7_USART @ sysbus 0x40013800[cite: 5]
+//    - <别名> 可以在 Monitor 中通过 sysbus.<别名> 访问（如 sysbus.usart1）。
+//    - <C#类名> 指向 Renode 内置的底层 C# 仿真模型（U5 串口兼容 F7 模型）[cite: 5]。
+// 3. 属性设置：在外设下方缩进设置，如 frequency: 160000000[cite: 5]。
+// 4. 中断映射：使用 "->" 连接信号与中断控制器（NVIC）。
+//    - 语法：<外设中断信号> -> <中断控制器别名>@<IRQ向量号>
+//    - 示例：IRQ -> nvic0@61 （表示触发 NVIC 的第 61 号中断）[cite: 5]。
+// 5. 嵌套/复杂注册：使用大括号 {} 描述包含多参数注册的外设（如带有 CPU 绑定的 NVIC）。
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 1. 地址标签（Tag）：仅在日志中为地址区间标记名称，方便 Trace 调试，不消耗逻辑
+// ----------------------------------------------------------------------------
+sysbus:
+    init:
+        Tag <0x40013000 0x400> "spi1"
+        Tag <0x40005400 0x400> "i2c1"
+        Tag <0x40012c00 0x400> "timers1"
+
+// ----------------------------------------------------------------------------
+// 2. GPIO 端口：LQFP64 封装硬件仅保留 GPIOA ~ GPIOD
+// ----------------------------------------------------------------------------
+gpioa: GPIOPort.STM32_GPIOPort @ sysbus <0x42020000, +0x400>
+
+gpiob: GPIOPort.STM32_GPIOPort @ sysbus <0x42020400, +0x400>
+
+gpioc: GPIOPort.STM32_GPIOPort @ sysbus <0x42020800, +0x400>
+
+gpiod: GPIOPort.STM32_GPIOPort @ sysbus <0x42020c00, +0x400>
+
+// ----------------------------------------------------------------------------
+// 3. 通信串口（全系列串口在 Renode 中均统一下发给 STM32F7_USART 模型驱动）[cite: 4, 5]
+//    frequency: 外设时钟源频率（赫兹）
+// ----------------------------------------------------------------------------
+usart1: UART.STM32F7_USART @ sysbus 0x40013800
+    frequency: 160000000
+    IRQ -> nvic0@61
+
+usart3: UART.STM32F7_USART @ sysbus 0x40004800
+    frequency: 160000000
+    IRQ -> nvic0@63
+    // USART3_RX 走 GPDMA1 CH0（IRQ29）：每字节挂起通道中断 + 供钩子搬运
+    ReceiveDmaRequest -> nvic0@29
+
+uart4: UART.STM32F7_USART @ sysbus 0x40004C00
+    frequency: 160000000
+    IRQ -> nvic0@64
+
+uart5: UART.STM32F7_USART @ sysbus 0x40005000
+    frequency: 160000000
+    IRQ -> nvic0@65
+
+lpuart1: UART.STM32F7_USART @ sysbus 0x46002400
+    frequency: 160000000
+    IRQ -> nvic0@66
+    // 每字节 DMA 请求线：a) 原生挂起 LPDMA1_CH0 中断(114，真硬件同款时序)
+    //                    b) 供 lpuart1_lpdma_hook.py 触发数据搬运（resc 里挂载）
+    ReceiveDmaRequest -> nvic0@114
+
+// GPDMA1 @ 0x40020000（16 通道）：寄存器 stub，USART3_RX 在 CH0（IRQ29）
+// （与 LPDMA1 同一段脚本，寄存器布局一致；size 需 0x1000 覆盖 16 通道）
+gpdma1: Python.PythonPeripheral @ sysbus 0x40020000
+    size: 0x1000
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_lpdma_stub.py"
+
+// LPDMA1 @ 0x46025000（4 通道）：寄存器 stub，配合钩子仿真 LPUART1_RX DMA
+// （Renode 无 GPDMA/LPDMA 模型：STM32WBA55_GPDMA 请求线被 FIFOL 拦死、
+//   链表是 TODO，故用 Python 自实现"每字节搬运+循环链表回卷+通道中断"）
+lpdma1: Python.PythonPeripheral @ sysbus 0x46025000
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_lpdma_stub.py"
+
+// ----------------------------------------------------------------------------
+// 4. 总线外设（SPI / I2C）
+//    series: 参数用于指定芯片族的内部寄存器布局风格（如 F4/F7/L4）
+// ----------------------------------------------------------------------------
+spi1: SPI.STM32SPI @ sysbus 0x40013000
+    series: STM32Series.F4
+    IRQ -> nvic0@59
+
+i2c1: I2C.STM32F7_I2C @ sysbus 0x40005400
+    EventInterrupt -> nvic0@55    // 事件中断信号引脚
+    ErrorInterrupt -> nvic0@56    // 错误中断信号引脚
+
+// ----------------------------------------------------------------------------
+// 5. 模拟量与定时器外设
+// ----------------------------------------------------------------------------
+// ADC 换成打桩脚本：内置 F4 模型缺 U5 的 ADVREGEN 位(CR bit28)，
+// HAL_ADC_Init 回读校验会失败；stub 提供 ADRDY/EOC/DR 假数据
+adc1: Python.PythonPeripheral @ sysbus 0x42028000
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_adc_stub.py"
+
+timers3: Timers.STM32_Timer @ sysbus <0x40000400, +0x400>
+    frequency: 10000000
+    initialLimit: 0xffffffff      // 计数器重装载上限 (32位)
+    -> nvic0@46
+
+timers4: Timers.STM32_Timer @ sysbus <0x40000800, +0x400>
+    frequency: 10000000
+    initialLimit: 0xffffffff
+    -> nvic0@47
+
+iwdg: Timers.STM32_IndependentWatchdog @ sysbus 0x40003000
+    frequency: 32000              // 内部低速时钟 LSI 32kHz
+
+rtc: Timers.STM32F4_RTC @ sysbus 0x46007800
+    AlarmIRQ -> nvic0@2
+
+rng: Miscellaneous.STM32_RNG @ sysbus 0x420c0800
+    series: STM32Series.F4
+    -> nvic0@94
+
+// FDCAN1 核心寄存器直通打桩（写后回读校验通过；报文不仿真）
+fdcan1: Python.PythonPeripheral @ sysbus 0x4000A400
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_fdcan_stub.py"
+
+// DCACHE1 直通打桩：SVD 复位值把 SR.BUSYF 置 1，HAL 等"不忙"会超时；
+// stub 里 SR 初始为 0（不忙），CR 写后可回读
+dcache1: Python.PythonPeripheral @ sysbus 0x40031400
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_dcache_stub.py"
+
+// ----------------------------------------------------------------------------
+// 6. 内存映射（Memory.MappedMemory 映射真实 RAM/Flash 空间）
+// ----------------------------------------------------------------------------
+flash0: Memory.MappedMemory @ sysbus 0x8000000
+    size: 0x200000                // 2MB 片上 Flash
+
+sram0: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0xC0000                 // 768KB SRAM1+SRAM2+SRAM3
+
+sram4: Memory.MappedMemory @ sysbus 0x28000000
+    size: 0x4000                  // 16KB SRAM4（LPDMA1 缓冲/节点区，
+                                  //  对应固件链接脚本 .sram4_section）
+
+partition: Memory.MappedMemory @ sysbus 0x0
+    size: 0x4000000               // 向量表与启动映射区
+
+// ----------------------------------------------------------------------------
+// 7. 内核与 NVIC 控制器
+//    必须用普通总线注册（官方 stm32f4/f746 同款写法）：
+//    之前用 Bus.BusPointRegistration 嵌套注册只覆盖了 SysTick 一小块，
+//    ISER(+0x100)/ISPR(+0x200) 都没映射，导致 HAL_NVIC_EnableIRQ 无效、
+//    所有外设中断（UART TXE 等）永远送不到 CPU。
+// ----------------------------------------------------------------------------
+nvic0: IRQControllers.NVIC @ sysbus 0xE000E000
+    systickFrequency: 160000000   // 滴答定时器主频 (160MHz)
+    IRQ -> cpu0@0                 // 中断送入 cpu0（NVIC 输出线名必须写 IRQ）
+
+cpu0: CPU.CortexM @ sysbus
+    cpuType: "cortex-m33"
+    nvic: nvic0                   // 绑定关联的 NVIC 实例
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 160000000
+
+// ----------------------------------------------------------------------------
+// 8. Python 脚本虚拟外设（用 flipflop.py 模拟寄存器读写逻辑，防止初始化卡死）[cite: 5]
+// ----------------------------------------------------------------------------
+// PWR/RCC 用定制打桩脚本：回读时强制就绪位置位
+// （flipflop.py 只回读写入的"请求位"，没有 RDY 位，HAL 仍会死等）
+pwr: Python.PythonPeripheral @ sysbus 0x46020800
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_pwr_stub.py"
+
+rcc: Python.PythonPeripheral @ sysbus 0x46020C00
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_rcc_stub.py"
+
+// FLASH 控制寄存器（0x40022000）读写直通：
+// HAL 写 FLASH_ACR 设定延迟后会回读校验，SVD 恒返回 0 会导致时钟配置失败
+flashCtrl: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    filename: "E:/Project/Flod_Array/Renode/stm32u5_flash_stub.py"
+
+// ----------------------------------------------------------------------------
+// 9. 动态钩子段（sysbus init add）
+//    在机器初始化完成后执行的附加指令（加载 SVD，对齐特定标志位）
+// ----------------------------------------------------------------------------
+sysbus:
+    init add:
+        // 加载标准 SVD 文件，使 Renode Log 显示寄存器别名而非裸地址[cite: 5]
+        ApplySVD @https://dl.antmicro.com/projects/renode/svd/STM32U5XX.svd.gz
+        
+        // RCC/PWR 已由上面的 stm32u5_rcc_stub.py / stm32u5_pwr_stub.py 托管：
+        //   - RCC_CR    回读强制 MSIS/MSIK/HSI/HSI48/SHSI/HSE/PLL1/2/3 RDY 置位
+        //   - RCC_CFGR1 回读时 SWS 自动跟随 SW（系统时钟切换完成标志）
+        //   - RCC_BDCR  回读强制 LSERDY 置位
+        //   - PWR_VOSR  回读强制 VOSRDY/BOOSTRDY 置位
+        // 注意：Tag 只能给地址起日志别名，不能改写寄存器值，之前的做法无效。

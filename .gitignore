@@ -1,0 +1,39 @@
+# ===== 构建输出（过程文件，整个目录忽略） =====
+Debug/
+Release/
+build/
+
+# ===== 编译中间产物 =====
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.bin
+*.hex
+*.axf
+*.lst
+*.gcno
+*.gcda
+*.robot
+
+# ===== WorkBuddy 本地助手数据（勿上传） =====
+.workbuddy/
+
+# ===== 系统 / 编辑器缓存 =====
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.log
+*.tmp
+
+# Office 临时锁文件（~$ 开头）
+~$*
+
+# ===== 可选：若 Doc 内资料涉密，取消下面注释以排除整个文档目录 =====
+# Doc/
