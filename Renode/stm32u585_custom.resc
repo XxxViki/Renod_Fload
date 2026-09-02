@@ -1,101 +1,145 @@
 # ============================================================================
 # Renode 启动脚本 (.resc) —— STM32U585RITxQ 定制版
 # ----------------------------------------------------------------------------
-# .resc 文件语法说明（Renode Script / Monitor 命令）：
+# 结构导航（调试时按节找，不用翻）：
+#   §0 语法速查（查阅用）  §1 机器与固件     §2 观察窗口（全部 Analyzer）
+#   §3 TCP 终端（全部）    §4 串口 DMA 仿真（按串口分块，收发成对）
+#   §5 DMA 速查与新外设模板    §6 调试工具    §7 启动
 #
-# 1. 它就是把你平时在 Renode Monitor 命令行里敲的命令按顺序写进文件，
-#    '#' 开头是注释；文件里可以用 $变量 保存路径/字符串。
-#    $ORIGIN 是内置变量 = 本脚本所在目录。
+# 用法：命令行执行  renode stm32u585_custom.resc  （脚本末尾已含 start）
+# ============================================================================
+# §0 语法速查 —— .resc 就是把 Monitor 命令行里敲的命令按顺序写进文件
+# ----------------------------------------------------------------------------
+# 通用规则：
+#   - '#' 开头为注释；一行一条命令；\ 续行（一般用不到）
+#   - $变量 = "字符串" 可保存长命令串，之后任何命令的参数位直接写 $变量
+#     （本文件用 $DMA_RX_HOOK 消掉四处重复的钩子长串）
+#   - @路径 相对本脚本目录（@platforms/... 则是 Renode 安装目录）
+#   - $ORIGIN 内置变量 = 本脚本所在目录
 #
-# 2. 常用命令：
-#    - mach create "名字"                     创建一台虚拟机器
-#    - machine LoadPlatformDescription @xxx   加载 .repl 平台描述
-#      （@ 前缀表示路径相对于本脚本；@platforms/... 则是 Renode 安装目录）
-#    - sysbus LoadELF @xxx.elf                把固件 ELF 加载到内存
-#      （ELF 自带地址信息；bin 则要用 LoadBinary $addr 形式指地址）
-#    - using sysbus                           之后可省略 "sysbus." 前缀
-#    - showAnalyzer usart1                    弹出 UART 波形/终端分析窗口
-#    - machine StartGdbServer 3333            开 GDB 服务，供 IDE 远程调试
-#    - start / pause / Reset                  运行/暂停/复位虚拟机
+# 机器与加载：
+#   mach create "名字"                        创建虚拟机（此后 Monitor 上下文指向它）
+#   machine LoadPlatformDescription @x.repl   加载平台描述（外设/内存/中断接线）
+#   sysbus LoadELF @x.elf                     加载固件 ELF（自带地址；bin 要
+#                                             sysbus LoadBinary @x.bin <地址>）
+#   using sysbus                               之后可省略 "sysbus." 前缀
 #
-# 3. 用法：命令行执行  renode stm32u585_custom.resc
-#    然后在 Monitor 里输入 start（或取消下面 start 的注释一键运行）
+# 串口观察与外接：
+#   showAnalyzer <外设> [显示名]              弹出终端窗口实时显示该 UART 输出
+#   emulation CreateServerSocketTerminal <端口> "<终端名>" [telnetMode]
+#       开一个 TCP 服务端，外部程序（串口助手/PuTTY/Python）连 localhost:<端口>
+#       即可与该 UART 双向收发。第 3 参 telnetMode：false=纯字节流（推荐，
+#       true 会先发 Telnet 协商字节 FF FD...，串口助手显示乱码）
+#   connector Connect <外设> <终端>           把 UART 的 TX/RX 接到该 TCP 终端
+#
+# DMA 仿真钩子（详见 §5 与 stub 脚本头部说明）：
+#   sysbus.<uart> ReceiveDmaRequest AddStateChangedHook "<python>"
+#       挂"每字节搬运"钩子：串口每收到一字节（DMAR 使能）执行一次 python
+#   sysbus AddWatchpointHook <地址> DoubleWord Write "<python>"
+#       地址被 32 位写入时执行 python（作用域有 address/value/self=sysbus）
+#   sysbus SetHookBeforePeripheralWrite sysbus.<uart> "<python>"
+#       指定外设任何寄存器写之前执行 python（作用域有 machine/offset/value）
+#
+# 调试与运行：
+#   sysbus LogPeripheralAccess sysbus.<外设>  日志记录该外设每次寄存器读写
+#   machine StartGdbServer 3333               开 GDB 服务，CubeIDE/VSCode 连接
+#   start / pause                             运行/暂停虚拟机（Reset 不可用，
+#                                             重启固件用 pause + LoadELF + start）
 # ============================================================================
 
-# ---------------------------------------------------------------- 1. 建机器
+# ---------------------------------------------------------------- §1 机器与固件
 mach create "STM32U585"
-
-# 加载本目录下为本板定制的平台描述（GPIO/USART/SPI/I2C/ADC/TIM1/内存）
 machine LoadPlatformDescription @stm32u585_custom.repl
-
-# ---------------------------------------------------------------- 2. 加载固件
-# 编译工程后把 .elf 路径改到你的输出目录，例如 ../Debug/Flod_Array.elf
 sysbus LoadELF @../Debug/Flod_Array.elf
 
-# ---------------------------------------------------------------- 3. 串口观察
-# showAnalyzer [外设] ([显示名]) —— 打开一个终端窗口，实时显示该 UART 输出
-# 你的固件 printf 走 USART1（PB6=TX/PA10=RX），所以这里挂 usart1
-showAnalyzer sysbus.usart1
+# ------------------------------------------------------------- §2 观察窗口
+# showAnalyzer <外设>：弹出终端窗口实时显示该 UART 输出（全部集中在此）
+showAnalyzer sysbus.usart1     # 调试打印（printf，PB6=TX）
+showAnalyzer sysbus.lpuart1    # 声通/主标
+showAnalyzer sysbus.usart3     # 电机
+showAnalyzer sysbus.uart4      # 罗盘
 
-# 再创建一个 TCP 终端：外部程序连 localhost 4444 即可收发 UART4 数据
-# 语法: emulation CreateServerSocketTerminal <端口> "<终端名>"
-emulation CreateServerSocketTerminal 4444 "uart4_tcp"
-# connector Connect <外设> <终端> —— 把 UART4 的 TX/RX 接到该 TCP 终端
-connector Connect sysbus.uart4 uart4_tcp
-
-# LPUART1：Analyzer 窗口看输出
-showAnalyzer sysbus.lpuart1
-
-# USART3：Analyzer 窗口看输出
-#showAnalyzer sysbus.usart3
-
-# LPUART1 再接一个 TCP 终端，用于向仿真机"输入"串口数据：
-# 外部程序（telnet / PuTTY(远程登录模式) / Python脚本）连 localhost:4445，
-# 发出的字节会进入 LPUART1 的 RX（固件经 LPDMA1 循环链表 DMA 接收），
-# 固件经 LPUART1 发出的数据也会原样出现在该连接上（双向）
-# 第三个参数 = telnetMode：false 为纯字节流（串口助手直连推荐）；
-# true 会先发 Telnet 协商字节（FF FD ...），部分工具会显示乱码或卡住
+# ------------------------------------------------------------- §3 TCP 终端
+# CreateServerSocketTerminal <端口> <名> false —— 第 3 参 telnetMode 必须 false
+# （true 会先发 Telnet 协商字节，串口助手显示乱码）；connector Connect 双向连接。
+# 外部程序（串口助手/PuTTY/Python）连对应端口即可与该串口互发数据。
 emulation CreateServerSocketTerminal 4445 "lpuart1_tcp" false
 connector Connect sysbus.lpuart1 lpuart1_tcp
 
-# ---------------------------------------------------------------- 3.5 LPDMA1 仿真
-# LPUART1 RX 走 LPDMA1 CH0（循环链表）。Renode 无 DMA 模型，用钩子还原：
-#   每收到一个字节 -> 钩子从 RDR 搬一字节到 SRAM4 缓冲、减 BNDT、
-#   块完成置 TCF 并按 CLLR 回卷节点（见 lpuart1_lpdma_hook.py）
-# 帧结束事件不用脚本：固件用 RTOF 接收超时（RTOR=32bit，模型原生实现，真机同款），
-#   在 LPUART1_IRQHandler 的 USER CODE 段处理（见 stm32u5xx_it.c）
-# 每字节中断无需脚本：repl 里 ReceiveDmaRequest 已直连 nvic0@114
-sysbus.lpuart1 ReceiveDmaRequest AddStateChangedHook "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
-
-# 启动竞态看门狗：固件写 CR3 时若 DMA 已使能且 RDR 有滞留字节（数据比 DMAR 先到，
-# 请求线错过跳变），钩子强制搬走，防止 RXNE 悬死 → HAL"DMA模式"不读RDR → 中断风暴
-sysbus AddWatchpointHook 0x46002408 DoubleWord Write "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
-# USART3 RX（GPDMA1 CH0，IRQ29）：同样的钩子 + CR3 看门狗（usart3 CR3=0x40004808）
-sysbus.usart3 ReceiveDmaRequest AddStateChangedHook "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
-sysbus AddWatchpointHook 0x40004808 DoubleWord Write "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
-
-# USART3 再接一个 TCP 终端，用于向仿真机输入串口数据（可双向收发）：
-# 外部程序连 localhost:4446，发出的字节进入 USART3 RX（固件经 GPDMA1 CH0 DMA 接收）
-# telnetMode=false 纯字节流，串口助手直连推荐
 emulation CreateServerSocketTerminal 4446 "usart3_tcp" false
 connector Connect sysbus.usart3 usart3_tcp
-# ---------------------------------------------------------------- 4. GPIO 观察
-# LogPeripheralAccess 会在日志里记录对某外设寄存器的每次读写，
-# 配合 Tag 可看到 PC13 的 ODR(偏移 0x14) bit13 翻转
+
+emulation CreateServerSocketTerminal 4444 "uart4_tcp" false
+connector Connect sysbus.uart4 uart4_tcp
+
+# ------------------------------------------------------- §4 串口 DMA 仿真
+# Renode 无 GPDMA/LPDMA 模型，用 stub(寄存器) + 钩子(搬运) 还原（详见 §5
+# 与 stm32u5_lpdma_stub.py 头部"问题总结"）。RX 每串口两件套：
+#   (a) ReceiveDmaRequest 钩子 —— 每字节 RDR→缓冲、BNDT-1、块满回卷
+#   (b) CR3 写看门狗          —— 防"数据先于 DMAR 到达"的启动竞态（防中断风暴）
+# TX（仅 UART4 需要）：写前钩子主动搬运 + Button 触发 TC 中断（模型无 TX 请求线）。
+# 帧结束统一用固件侧 RTOF（接收超时），无需脚本。
+# 钩子脚本内部自带 try/except + with：异常绝不抛回 CPU 写路径（会拖垮仿真/
+# GDB 联调，坑10）；with 保证文件句柄确定性关闭（坑9）。
+# 【坑11·重要】exec 必须直接执行脚本内容，绝不能包进 def 再调用——
+# IronPython 函数内嵌 exec 看不到 Renode 注入的 state/address/value/self，
+# 钩子会静默失效（三口零回显→IRQ 风暴→HAL_Delay 卡死/PC 跑飞）。
+$DMA_RX_HOOK = "with open(r'E:/Project/Flod_Array/Renode/uart_dma_hook.py') as _f: exec _f.read()"
+
+# ---- LPUART1（声通/主标）：RX = LPDMA1 CH0（IRQ 114），TX 阻塞发送 ----
+sysbus.lpuart1 ReceiveDmaRequest AddStateChangedHook $DMA_RX_HOOK
+sysbus AddWatchpointHook 0x46002408 DoubleWord Write $DMA_RX_HOOK
+
+# ---- USART3（电机）：RX = GPDMA1 CH0（IRQ 29），TX 阻塞发送 ----
+sysbus.usart3 ReceiveDmaRequest AddStateChangedHook $DMA_RX_HOOK
+sysbus AddWatchpointHook 0x40004808 DoubleWord Write $DMA_RX_HOOK
+
+# ---- UART4（罗盘）：RX = GPDMA1 CH1（IRQ 30），TX = GPDMA1 CH2（IRQ 31） ----
+# RX 两件套
+sysbus.uart4 ReceiveDmaRequest AddStateChangedHook $DMA_RX_HOOK
+sysbus AddWatchpointHook 0x40004C08 DoubleWord Write $DMA_RX_HOOK
+# TX：模型只有 ReceiveDmaRequest 无 TX 线 → 写前钩子（CR3.DMAT 置位时触发）：
+# 按链表节点定位 TX 通道 → 装载 → 内存逐字节写 TDR → 置 TCF/清 EN →
+# tx_btn_31 按钮触发 TC 中断（Button 走模型真实中断线；Python 写 ISPR 无效，坑6）。
+# UART_BASE 经 chr(10) 拼接注入脚本首行（写前钩子作用域无 address 参数）。
+# 挂载写法与 $DMA_RX_HOOK 同规：入口先判 CR3(offset=8).DMAT(bit7)，避免每次
+# TDR 写都读文件；with 确定关闭句柄（裸 open().read() 的临时 StreamReader 会
+# 被 GC 中途回收 → "Cannot access a closed file" 崩仿真，见笔记§12.5 坑9）。
+$DMA_TX_HOOK = "with open(r'E:/Project/Flod_Array/Renode/uart4_tx_defer_stub.py') as _f: exec _f.read()"
+sysbus SetHookBeforePeripheralWrite sysbus.uart4 $DMA_TX_HOOK
+
+# ------------------------------------------------- §5 DMA 速查与新外设模板
+# 【通道<->IRQ 对照】GPDMA1(0x40020000,16ch): CH0-7→IRQ29-36, CH8-15→IRQ80-87
+#                   LPDMA1 (0x46025000, 4ch): CH0-3→IRQ114-117
+# 【当前占用】USART3_RX=GPCH0/29   UART4_RX=GPCH1/30   UART4_TX=GPCH2/31
+#             LPUART1_RX=LPCH0/114（缓冲须在 SRAM4；GPDMA 无此限制）
+# 【新串口 RX 三步】(1)repl: ReceiveDmaRequest -> nvic0@<通道IRQ>
+#   (2)resc: sysbus.<uart> ReceiveDmaRequest AddStateChangedHook $DMA_RX_HOOK
+#   (3)resc: sysbus AddWatchpointHook 0x<串口基址+8> DoubleWord Write $DMA_RX_HOOK
+#   固件三步：MspInit 配 hdmarx（P2M 循环链表）→ 启动(RTOR=32+RTOF+Receive_DMA)
+#   → IRQHandler USER 段清 RTOF 调 uart_frame_handler + ErrorCallback 重启 DMA。
+# 【新串口 TX】照抄 uart_tx_dma_hook.py 的 UART4 三件：repl 加 Button→nvic@<IRQ>、
+#   resc 写前钩子（改注入的 UART_BASE）、固件 M2P 单次链表 + Transmit_DMA。
+# 【非 UART 外设】看模型有无 DMA 请求端点：有→仿 RX 三步（dma_serve 的
+#   "读 RDR"一句要按外设数据寄存器改）；无→阻塞/IT 替代或自写钩子。
+# 【完整踩坑记录】stm32u5_lpdma_stub.py 头部（与笔记 §12.5 同步）。
+
+# ------------------------------------------------------------- §6 调试工具
+# 寄存器读写跟踪（排障时取消注释）：
 #sysbus LogPeripheralAccess sysbus.gpioc
-
-# ---------------------------------------------------------------- 5. GDB 调试
-# 开 3333 端口的 GDB 服务；不自动 start，由 CubeIDE/VSCode 连接后接管
+# GDB：IDE 联调用。TX 钩子已改延迟桩（uart4_tx_defer_stub.py），与 GDB
+# halt/continue 可共存（曾因写路径内联 Python 与 GDB 相互作用崩溃，§12.10）。
 machine StartGdbServer 3333
-#cpu ExecutionMode Paused     # 如需上电即暂停，取消本行注释
+#cpu ExecutionMode Paused     # 上电即暂停（调试用）
 
+# ------------------------------------------------------------- §7 启动
 echo ""
 echo "==========================================="
 echo " STM32U585 platform ready."
-echo " GDB Server : localhost:3333"
-echo " UART4 TCP  : localhost:4444"
-echo " LPUART1 TCP: localhost:4445 (可双向收发)"
-echo " USART3  TCP: localhost:4446 (可双向收发)"
+echo " GDB Server  : localhost:3333"
+echo " LPUART1 TCP : localhost:4445 (双向)"
+echo " USART3  TCP : localhost:4446 (双向)"
+echo " UART4  TCP  : localhost:4444 (罗盘,双向)"
 echo " 输入 start 开始运行"
 echo "==========================================="
 echo ""

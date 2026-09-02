@@ -21,7 +21,10 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
-
+/* UART4 TX DMA（GPDMA1 CH2，UART4_TX，M2P 普通链表）—— 手写新增，CubeMX 不覆盖 */
+DMA_NodeTypeDef Node_GPDMA1_Channel2;
+DMA_QListTypeDef List_GPDMA1_Channel2;
+DMA_HandleTypeDef handle_GPDMA1_Channel2;
 /* USER CODE END 0 */
 
 UART_HandleTypeDef hlpuart1;
@@ -32,6 +35,9 @@ UART_HandleTypeDef huart3;
 DMA_NodeTypeDef Node_LPDMA1_Channel0;
 DMA_QListTypeDef List_LPDMA1_Channel0;
 DMA_HandleTypeDef handle_LPDMA1_Channel0;
+DMA_NodeTypeDef Node_GPDMA1_Channel1;
+DMA_QListTypeDef List_GPDMA1_Channel1;
+DMA_HandleTypeDef handle_GPDMA1_Channel1;
 DMA_NodeTypeDef Node_GPDMA1_Channel0;
 DMA_QListTypeDef List_GPDMA1_Channel0;
 DMA_HandleTypeDef handle_GPDMA1_Channel0;
@@ -388,8 +394,117 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN UART4_MspInit 1 */
+    /* UART4 DMA Init */
+    /* GPDMA1_REQUEST_UART4_RX Init */
+    NodeConfig.NodeType = DMA_GPDMA_LINEAR_NODE;
+    NodeConfig.Init.Request = GPDMA1_REQUEST_UART4_RX;
+    NodeConfig.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
+    NodeConfig.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    NodeConfig.Init.SrcInc = DMA_SINC_FIXED;
+    NodeConfig.Init.DestInc = DMA_DINC_FIXED;
+    NodeConfig.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
+    NodeConfig.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
+    NodeConfig.Init.SrcBurstLength = 1;
+    NodeConfig.Init.DestBurstLength = 1;
+    NodeConfig.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
+    NodeConfig.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    NodeConfig.Init.Mode = DMA_NORMAL;
+    NodeConfig.TriggerConfig.TriggerPolarity = DMA_TRIG_POLARITY_MASKED;
+    NodeConfig.DataHandlingConfig.DataExchange = DMA_EXCHANGE_NONE;
+    NodeConfig.DataHandlingConfig.DataAlignment = DMA_DATA_RIGHTALIGN_ZEROPADDED;
+    if (HAL_DMAEx_List_BuildNode(&NodeConfig, &Node_GPDMA1_Channel1) != HAL_OK)
+    {
+      Error_Handler();
+    }
 
+    if (HAL_DMAEx_List_InsertNode(&List_GPDMA1_Channel1, NULL, &Node_GPDMA1_Channel1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    if (HAL_DMAEx_List_SetCircularMode(&List_GPDMA1_Channel1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    handle_GPDMA1_Channel1.Instance = GPDMA1_Channel1;
+    handle_GPDMA1_Channel1.InitLinkedList.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
+    handle_GPDMA1_Channel1.InitLinkedList.LinkStepMode = DMA_LSM_FULL_EXECUTION;
+    handle_GPDMA1_Channel1.InitLinkedList.LinkAllocatedPort = DMA_LINK_ALLOCATED_PORT0;
+    handle_GPDMA1_Channel1.InitLinkedList.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    handle_GPDMA1_Channel1.InitLinkedList.LinkedListMode = DMA_LINKEDLIST_CIRCULAR;
+    if (HAL_DMAEx_List_Init(&handle_GPDMA1_Channel1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    if (HAL_DMAEx_List_LinkQ(&handle_GPDMA1_Channel1, &List_GPDMA1_Channel1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(uartHandle, hdmarx, handle_GPDMA1_Channel1);
+
+    if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel1, DMA_CHANNEL_NPRIV) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    /* UART4 interrupt Init */
+    HAL_NVIC_SetPriority(UART4_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+  /* USER CODE BEGIN UART4_MspInit 1 */
+    /* ---- UART4 TX DMA（GPDMA1 CH2，UART4_TX，M2P 普通/单次链表）----
+     * RX 用循环链表（上面 CubeMX 已配 GPDMA1 CH1），TX 用单次链表：
+     * 发送完成进 HAL_UART_TxCpltCallback，链表不循环（发完即停）。
+     * RS485 方向控制：DE=PA15 配 AF8_UART4，由硬件自动拉高/拉低，
+     * 无需软件管理（HAL_RS485Ex_Init 已配好断言/去断言时序）。 */
+    NodeConfig.NodeType = DMA_GPDMA_LINEAR_NODE;
+    NodeConfig.Init.Request = GPDMA1_REQUEST_UART4_TX;
+    NodeConfig.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
+    NodeConfig.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    NodeConfig.Init.SrcInc = DMA_SINC_INCREMENTED;
+    NodeConfig.Init.DestInc = DMA_DINC_FIXED;
+    NodeConfig.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
+    NodeConfig.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
+    NodeConfig.Init.SrcBurstLength = 1;
+    NodeConfig.Init.DestBurstLength = 1;
+    NodeConfig.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
+    NodeConfig.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    NodeConfig.Init.Mode = DMA_NORMAL;
+    NodeConfig.TriggerConfig.TriggerPolarity = DMA_TRIG_POLARITY_MASKED;
+    NodeConfig.DataHandlingConfig.DataExchange = DMA_EXCHANGE_NONE;
+    NodeConfig.DataHandlingConfig.DataAlignment = DMA_DATA_RIGHTALIGN_ZEROPADDED;
+    if (HAL_DMAEx_List_BuildNode(&NodeConfig, &Node_GPDMA1_Channel2) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    if (HAL_DMAEx_List_InsertNode(&List_GPDMA1_Channel2, NULL, &Node_GPDMA1_Channel2) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    handle_GPDMA1_Channel2.Instance = GPDMA1_Channel2;
+    handle_GPDMA1_Channel2.InitLinkedList.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
+    handle_GPDMA1_Channel2.InitLinkedList.LinkStepMode = DMA_LSM_FULL_EXECUTION;
+    handle_GPDMA1_Channel2.InitLinkedList.LinkAllocatedPort = DMA_LINK_ALLOCATED_PORT0;
+    handle_GPDMA1_Channel2.InitLinkedList.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+    handle_GPDMA1_Channel2.InitLinkedList.LinkedListMode = DMA_LINKEDLIST;  /* 单次，非循环 */
+    if (HAL_DMAEx_List_Init(&handle_GPDMA1_Channel2) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    if (HAL_DMAEx_List_LinkQ(&handle_GPDMA1_Channel2, &List_GPDMA1_Channel2) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(uartHandle, hdmatx, handle_GPDMA1_Channel2);
+
+    if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel2, DMA_CHANNEL_NPRIV) != HAL_OK)
+    {
+      Error_Handler();
+    }
   /* USER CODE END UART4_MspInit 1 */
   }
   else if(uartHandle->Instance==UART5)
@@ -627,6 +742,11 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_10|GPIO_PIN_11);
 
+    /* UART4 DMA DeInit */
+    HAL_DMA_DeInit(uartHandle->hdmarx);
+
+    /* UART4 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(UART4_IRQn);
   /* USER CODE BEGIN UART4_MspDeInit 1 */
 
   /* USER CODE END UART4_MspDeInit 1 */
@@ -727,6 +847,13 @@ uint8_t lpuart1_dma_rx_buf[LPUART1_DMA_RX_BUF_SIZE];
 #define USART3_DMA_RX_BUF_SIZE 256
 uint8_t usart3_dma_rx_buf[USART3_DMA_RX_BUF_SIZE];
 
+/* ---------------------------------------------------------------------------
+ * UART4 DMA 接收（GPDMA1 CH1 循环链表）
+ * RS485 半双工：DE=PA15（AF8_UART4）硬件自动方向控制，收发互斥由总线仲裁
+ * ------------------------------------------------------------------------- */
+#define UART4_DMA_RX_BUF_SIZE 256
+uint8_t uart4_dma_rx_buf[UART4_DMA_RX_BUF_SIZE];
+
 /**
   * @brief  帧到达处理（通用）：回显自上次读取位置以来的新数据（读写指针追踪）
   * @param  huart: 串口句柄   buf/buf_size: 该串口的 DMA 接收缓冲
@@ -734,18 +861,40 @@ uint8_t usart3_dma_rx_buf[USART3_DMA_RX_BUF_SIZE];
   *         不能用"缓冲全长-计数器"当本次长度——那是自通道启动/回卷以来的累计值，
   *         会导致旧帧被反复回显（每次多一帧）。写指针回卷（wr < rd）时分两段发。
   */
+/* 仿真排障观察点（真机无副作用）：帧处理调用次数 / 最近一次 TX DMA 返回码 */
+volatile uint32_t g_uart4_frame_calls = 0;
+volatile uint32_t g_uart4_tx_dma_ret = 0xFFFFFFFF;
+
 void uart_frame_handler(UART_HandleTypeDef *huart, uint8_t *buf, uint16_t buf_size)
 {
-    static uint16_t rd_lpuart1 = 0, rd_usart3 = 0;   /* 各串口的读位置 */
-    uint16_t *rd = (huart->Instance == LPUART1) ? &rd_lpuart1 : &rd_usart3;
+    static uint16_t rd_lpuart1 = 0, rd_usart3 = 0, rd_uart4 = 0;   /* 各串口的读位置 */
+    uint16_t *rd;
+    if (huart->Instance == LPUART1)      rd = &rd_lpuart1;
+    else if (huart->Instance == UART4)   rd = &rd_uart4;
+    else                                 rd = &rd_usart3;
     uint16_t wr = (uint16_t)(buf_size - __HAL_DMA_GET_COUNTER(huart->hdmarx));
     if (wr == *rd)
     {
         return;                /* 无新数据（如整块刚被 TC 处理完） */
     }
+    /* 回显出口：UART4 走 TX DMA（GPDMA1 CH2，发送完成进 HAL_UART_TxCpltCallback），
+     * 其余串口维持阻塞发送。TX 通道忙（HAL_BUSY，RS485 半双工并发）时回退阻塞，
+     * 保证数据必达；写指针回卷的两段帧也退回阻塞（单 TX 通道一次只能发一段）。 */
     if (wr > *rd)
     {
-        HAL_UART_Transmit(huart, &buf[*rd], (uint16_t)(wr - *rd), 100);
+        if (huart->Instance == UART4)
+        {
+            g_uart4_frame_calls++;
+            g_uart4_tx_dma_ret = (uint32_t)uart4_transmit_dma(&buf[*rd], (uint16_t)(wr - *rd));
+            if (g_uart4_tx_dma_ret != (uint32_t)HAL_OK)
+            {
+                HAL_UART_Transmit(huart, &buf[*rd], (uint16_t)(wr - *rd), 100);
+            }
+        }
+        else
+        {
+            HAL_UART_Transmit(huart, &buf[*rd], (uint16_t)(wr - *rd), 100);
+        }
     }
     else
     {
@@ -766,6 +915,12 @@ void lpuart1_frame_handler(void)
 void usart3_frame_handler(void)
 {
     uart_frame_handler(&huart3, usart3_dma_rx_buf, USART3_DMA_RX_BUF_SIZE);
+}
+
+/* UART4（GPDMA1 CH1）帧到达：stm32u5xx_it.c 的 UART4_IRQHandler 调用 */
+void uart4_frame_handler(void)
+{
+    uart_frame_handler(&huart4, uart4_dma_rx_buf, UART4_DMA_RX_BUF_SIZE);
 }
 
 /**
@@ -807,6 +962,11 @@ void Start_UART_Receive(void)
     huart3.Instance->RTOR = 32u;                    // 32 bit 时间无数据 => 帧结束
     __HAL_UART_ENABLE_IT(&huart3, UART_IT_RTO);     // RTOF 中断使能
     HAL_UART_Receive_DMA(&huart3, usart3_dma_rx_buf, USART3_DMA_RX_BUF_SIZE);
+
+    // GPDMA1 CH1 已由 MX_UART4_Init 配好循环链表（UART4_RX，hdmarx->Mode=DMA_LINKEDLIST_CIRCULAR）
+    huart4.Instance->RTOR = 32u;                    // 32 bit 时间无数据 => 帧结束
+    __HAL_UART_ENABLE_IT(&huart4, UART_IT_RTO);     // RTOF 中断使能
+    HAL_UART_Receive_DMA(&huart4, uart4_dma_rx_buf, UART4_DMA_RX_BUF_SIZE);
 }
 
 // 如果串口出错（如溢出 ORE），在错误回调中重启 DMA 接收。
@@ -823,6 +983,47 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     {
         __HAL_UART_CLEAR_OREFLAG(huart);
         HAL_UART_Receive_DMA(&huart3, usart3_dma_rx_buf, USART3_DMA_RX_BUF_SIZE);
+    }
+    else if (huart->Instance == UART4)
+    {
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        HAL_UART_Receive_DMA(&huart4, uart4_dma_rx_buf, UART4_DMA_RX_BUF_SIZE);
+    }
+}
+
+/**
+  * @brief  UART4 TX DMA 发送封装（GPDMA1 CH2，单次链表）
+  * @param  pData: 发送缓冲   Size: 字节数
+  * @note   RS485 DE 由硬件自动管理；发送完成进 HAL_UART_TxCpltCallback。
+  *         同一时刻只允许一路发送（半双工），gState==BUSY_TX 时返回 HAL_BUSY。
+  */
+HAL_StatusTypeDef uart4_transmit_dma(const uint8_t *pData, uint16_t Size)
+{
+    HAL_StatusTypeDef ret = HAL_UART_Transmit_DMA(&huart4, pData, Size);
+    /* Renode 仿真兼容：HAL 内部用 ATOMIC_SET_BIT(CR3, DMAT)（LDREX/STREX 独占写）
+     * 启动 TX，仿真钩子在 STREX 飞行中嵌套搬运会污染这次写，导致 CR3.DMAR 陪葬。
+     * 真机上 DMAR 常置，此行是无操作；仿真里把 CR3 修回正确状态。
+     * 注意必须保持 bit7=0，避免重复触发 TX 钩子搬运分支。 */
+    if (ret == HAL_OK)
+    {
+        SET_BIT(huart4.Instance->CR3, USART_CR3_DMAR);
+    }
+    return ret;
+}
+
+/**
+  * @brief  UART4 发送完成回调：GPDMA1 CH2 单次链表跑完触发
+  * @note   这里可置应用层标志（如 tx_done），供上层查询后发起下一帧
+  */
+volatile uint32_t g_uart4_tx_dma_cplt = 0;    /* TX DMA 完成次数（测试/诊断观察点） */
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == UART4)
+    {
+        g_uart4_tx_dma_cplt++;               /* 仅 TX DMA 路径会走到这里 */
+        /* RS485 发送完成：DE 已由硬件拉低，总线回到接收态 */
+        /* 应用层可在此置标志/触发下一帧，例如：g_uart4_tx_done = 1; */
     }
 }
 /* USER CODE END 1 */

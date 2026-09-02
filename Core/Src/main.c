@@ -137,8 +137,8 @@ int main(void)
 //	  HAL_Delay(1000);
 
 //
-//	  HAL_UART_Transmit_IT(&huart1,uart,sizeof(uart));
-//	  HAL_Delay(1000);
+	  HAL_UART_Transmit_IT(&huart1,uart,sizeof(uart));
+	  HAL_Delay(1000);
 
 	  process_Host_data();
   }

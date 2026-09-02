@@ -165,18 +165,27 @@ def dma_on_cr3_write(sb, uart_base):
 
 
 # ---- 入口：按作用域自动分发 ----
-# GPIO 钩子作用域有 state/self(GPIO)；写断点作用域有 address/value/self(sysbus)
+# GPIO 钩子作用域有 state/self(GPIO)；写断点作用域有 address/value/self(sysbus)。
+# 【坑】本文件必须由钩子字符串"直接 exec"（with open(...) as _f: exec _f.read()），
+# 绝不能包进 def 再调用：IronPython 函数内嵌 exec 看不到 Renode 注入的
+# state/address/value/self（入口的 NameError 分支全部落空）→ 钩子静默失效
+# → RDR 无人读、请求线悬高 → IRQ 风暴饿死主循环（HAL_Delay 卡死/PC 跑飞）。
+# 异常防护放这里（模块级整体 try/except），不依赖外层包裹：
+# 钩子异常若抛回 CPU 写路径会拖垮整个仿真（GDB halt 时尤甚）。
 try:
-    _gpio_state = state
-except NameError:
-    _gpio_state = False
-if _gpio_state:
-    dma_on_gpio(self)
-try:
-    _wp_value = value
-except NameError:
-    _wp_value = None
-if _wp_value is not None:
-    _wp_addr = int(address)
-    if (_wp_addr & 0xFFF) == 0x008:        # 只认 CR3（串口基址+8）
-        dma_on_cr3_write(self, _wp_addr - 8)
+    try:
+        _gpio_state = state
+    except NameError:
+        _gpio_state = False
+    if _gpio_state:
+        dma_on_gpio(self)
+    try:
+        _wp_value = value
+    except NameError:
+        _wp_value = None
+    if _wp_value is not None:
+        _wp_addr = int(address)
+        if (_wp_addr & 0xFF) == 0x08:      # 只认 CR3（串口基址+8；UART4=0x...C08，&0xFF 才对得上）
+            dma_on_cr3_write(self, _wp_addr - 8)
+except:
+    pass

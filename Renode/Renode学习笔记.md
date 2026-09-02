@@ -593,3 +593,150 @@ RTOF（帧结束约 2.2ms 后必然触发，rd/wr 的回卷分支本就支持跨
 **验证**：160 帧×7 字节=1120 字节（缓冲 1024，跨边界），CNT=160 恰好、
 BNDT=1024-96=928 正确；TCP/竞态/集成三套回归通过。四套 robot 测试的
 BNDT 断言已改为缓冲大小自适应（从节点镜像 0x28000008 读全量）。
+
+### §12.7 多串口 GPDMA1 接入与 resc 重组（2026-09-02）
+
+**USART3（电机）RX 上 GPDMA1 CH0（IRQ29）**，钩子已通用化：
+- `uart_dma_hook.py`（原 lpuart1_lpdma_hook.py 改名扩展）：通道由 GPIO 端点的
+  NVIC 输入号反推（GPDMA1 IRQ29-36=CH0-7、80-87=CH8-15；LPDMA1 114-117），
+  源地址直接读通道 CSAR——一份脚本服务所有串口；
+- stub 扩到 16 通道（GPDMA1 实例 @0x40020000 size 0x1000，与 LPDMA1 同脚本）；
+- 固件：GPDMA1 无 SRAM4 限制，缓冲放普通 RAM（usart3_dma_rx_buf@0x20000824），
+  `uart_frame_handler()` 泛化（按 Instance 分读位置）。
+- 注意端点属性名是 `ep.Number`（GPIOEndpoint 的目的编号）。
+
+**resc 重组规范**（用户要求）：§1 机器/固件 §2 观察窗口集中 §3 TCP 终端集中
+§4 按串口分块（说明在前、收发成对、钩子/看门狗紧随）§5 DMA 速查与新外设模板
+§6 调试工具 §7 启动；重复长命令用 `$DMA_RX_HOOK` 变量消重——**resc 的
+$变量可传给任何 Monitor 命令**（含钩子挂载），已实测。
+
+**坑14**：`Write To Uart` 只收字符串（传 bytes 报 InvalidCastException）；
+本版本实测**不**自动补换行（之前按 +1 字节算的断言要按实际字节数核）。
+
+**验证**：usart3_dma_test（USART3 三帧进 RAM 缓冲 + BNDT 精确）+ LPUART1
+五套回归全部通过。
+
+### §12.8 坑9 复发：TX 钩子的挂载串（2026-09-02）
+
+**现象**：UART4 用 TX DMA 回显，发几次 Renode 崩（Cannot access a closed file，
+栈顶在 BusPeripheralsHooksPythonEngine —— SetHookBeforePeripheralWrite 的
+CPU 写路径上）。
+
+**根因**：坑9 的裸 `open().read()` 模式当时只修了 RX 钩子，TX 钩子挂载串
+（`$DMA_TX_HOOK` 的前身）仍是裸模式；且写前钩子挂在**每次 uart4 寄存器写**
+上，触发频率极高，GC 中途回收读取器必崩。另一个中间版本的 def+try/except
+变体还吞掉了所有脚本错误（坑11），且被 robot 的 `|` 续行符切碎导致参数错乱。
+
+**修复（统一模板，三处同步）**：RX/TX 钩子挂载一律用标准 with-open 单行：
+  RX: "with open(r'.../uart_dma_hook.py') as _f: exec _f.read()"
+  TX: "with open(r'.../uart_tx_dma_hook.py') as _f: exec 'UART_BASE=0x<基址>' + chr(10) + _f.read()"
+（TX 的 offset==0x08/DMAT 过滤在 uart_tx_dma_hook.py 内部做，外层不再包
+def/try——引擎本身会捕获并打印脚本错误，不需要也不应该自己吞。）
+
+**重要**：钩子挂载串在 resc 执行时就被固化为引擎的脚本文本，**改完 resc 必须
+重启 Renode 才生效**（RX 钩子因每次执行都重读文件可自愈，TX 的挂载串不能）。
+已改处：stm32u585_custom.resc（$DMA_TX_HOOK）、uart4_tx_dma_test.robot、
+uart_tx_dma_hook.py 头部模板。uart4_tx_dma_test 两连跑通过。
+
+### §12.9 三口 TCP 双向验收 + 压力全绿（2026-09-02）
+
+**验收标准**（用户目标）：4445(LPUART1)/4446(USART3)/4444(UART4) 三口
+串口助手收发全部正常 + 压力测试。
+
+**结果**：`three_port_acceptance.robot` 全过——完整 resc 钩子环境 +
+三个真实 TCP 客户端：25s 空闲（PC 采样健康）→ 三口各发 PING 帧全部回显 →
+三口各 20 帧二进制压力全部恰好回显（COUNTS 20/20/20）→ 终态 PC 健康。
+
+**排障中的两个关键教训**：
+1. 测试 socket 的端口必须与被测实例严格对应：一度 sed 没替换到
+   `localhost', 4445`（引号后逗号），测试流量全部打到了**用户正在运行的
+   实例**上，造成"我的环境坏掉了"的假象。测试固定用 1444x 独立端口段。
+2. 用户实例上的 CPU abort(0x646E6572) 是 §12.8 的旧 TX 钩子在跑——
+   **改完 resc/钩子必须重启 Renode**，且旧实例不关会占住 444x 端口，
+   新实例在 CreateServerSocketTerminal 处直接报错中止（更迷惑）。
+
+**测试清单**（E:/Project/Flod_Array/Renode/）：
+- three_port_acceptance.robot —— 目标验收+压力（三口双向 20 帧）
+- threeport_diag.robot —— 三口单帧诊断（寄存器/缓冲/回显全 dump）
+
+### §12.10 真凶：GDB 服务 + IDE 自动重连（2026-09-02）
+
+**现象**："一仿真运行就崩"——完整 resc 环境（analyzer×4 + TCP×3 + 全部钩子
++ StartGdbServer）下，Renode **进程级死亡**（无 Fatal 栈，~20s），CPU 此前
+PC 采样全部健康。
+
+**定位**：二分环境——去掉 `machine StartGdbServer 3333` 后同环境一次全绿
+（analyzer/TCP/钩子/30s 空闲/三口流量回显全过）。机理：GDB 服务开启后，
+本机 IDE（CubeIDE 调试会话的自动重连）接入 3333，与 CPU 线程上执行的
+Python 写前钩子相互作用，进程崩溃。
+
+**处置**：resc 中 StartGdbServer 默认注释掉（需要 IDE 联调时打开，且仿真
+期间关闭 IDE 的活动调试会话）。复现/验证测试：full_env_repro_test.robot。
+
+### §12.10 GDB + TX DMA 共存问题（终版修复，2026-09-02）
+
+**现象**：用户必须用 GDB 联调（CubeIDE/3333），但引入 UART4 TX DMA 后
+"一仿真运行就崩"——Renode 进程级死亡（~20s，无 Fatal 栈）。之前三串口
+纯中断模式时 GDB 一直正常。
+
+**根因**：TX 写前钩子（SetHookBeforePeripheralWrite）的 Python（文件读取+
+总线搬运）在 **CPU 写路径内联执行**；IDE 的 GDB 会话（halt/单步/断点）
+恰好落在钩子中间时机器挂死甚至进程崩溃。可控复现：脚本化 GDB 客户端周期
+halt(\x03)+continue，直连钩子下 UART4 回显归零/挂死；去掉 GDB 则全绿。
+
+**修复：延迟转投桩 uart4_tx_defer_stub.py**（resc 的 $DMA_TX_HOOK 已指向它）：
+- 写路径上只留最小过滤（CR3.DMAT 置位判定，零文件 I/O）+ ScheduleAction(+1us)
+  把真正搬运转投到机器调度线程——GDB halt CPU 不再落在钩子内部；
+- GDB 服务恢复常开（resc 已取消注释 StartGdbServer 3333）。
+
+**延迟回调的两个新坑（记入 stub 头部）**：
+- 变量注入必须 globals()['offset']=...（函数内赋值落局部，文件入口读不到）；
+- 必须 exec src in globals()——普通 exec 时文件定义的常量（GPDMA1）落局部，
+  文件内部函数按全局查找报 NameError: GPDMA1（异常文本写 SRAM 取证定位）。
+
+**验证**：gdb_deferred_test.robot（GDB halt/continue 风暴 ×60 + 双口各 10 帧
+二进制 → lpuart1=10/uart4=10，机器存活）；three_port_acceptance 与
+uart4_tx_dma_test（已同步延迟桩）回归通过。GDB 客户端复现脚本也在该测试里
+（模拟 IDE 行为：\x03 + $c#63 循环）。
+
+### §12.11 坑11：钩子串包函数 → 全部 RX 钩子静默失效（2026-09-02 终版）
+
+**现象**：串口助手对 4445/4446/4444 全部零回显；换新实例、重启都一样；
+连上 CubeIDE 后"串口打印几个数据就跑飞"、"卡在 HAL_Delay 不出来"，
+GDB 端口（3333）查询无响应甚至拒连。
+
+**定位过程**：
+1. 对用户活实例实测（python socket 直连 4445/4446 + GDB `?` 包）：三口零回显
+   + GDB 无响应，复现成功；
+2. 用**逐字复刻的真实 resc**（仅端口改 1444x、GDB 改 13333）headless 复现：
+   启动正常（PC 在 flash、uwTick 走、CR3.DMAR=0x40、通道 EN=1），发 3 帧后
+   **PC=0xFFFFFFA8**，三口零回显；
+3. 对照实验：同一环境再挂一条**旧直连形式**钩子 → 回显立刻出现 → 锁定
+   resc 里的 `$DMA_RX_HOOK` 新形式。
+
+**根因**：为做异常防护，$DMA_RX_HOOK 曾改成
+`exec chr(10).join(('def _rxh():', '  try:', '    with open(...) as _f:',
+'      exec _f.read()', '  except: pass', '_rxh()'))`。
+**IronPython 函数内嵌 exec 看不到 Renode 注入的 state/address/value/self**
+——uart_dma_hook.py 入口的 `try: state / except NameError` 分支全部落空，
+钩子静默 no-op（不报任何错，日志无线索）。钩子死后无人读 RDR：
+- ReceiveDmaRequest 线悬高 → 通道 IRQ（114/29/30）风暴 → 主循环饿死 →
+  **HAL_Delay 卡死（uwTick 停走）**；
+- 中断不断重入 + 固件跑飞（**PC=0xFFFFFFA8**）；
+- GDB 服务线程随之无响应 → 拒连。
+一个根因串起全部症状。
+
+**修复**（两处，缺一不可）：
+- resc 恢复直连形式 `$DMA_RX_HOOK = "with open(r'...uart_dma_hook.py') as _f: exec _f.read()"`；
+- 异常防护移入 uart_dma_hook.py 入口（模块级整体 try/except: pass）——
+  作用域可见性与异常防护从此解耦。
+
+**坑12（同日）**：ServerSocketTerminal 每端口只服务一个客户端——已有连接时
+后续连接被无视并把监听搞挂（再连 ConnectionRefused）。排障时用探针脚本连过
+用户活实例的 4445/4446 会把它搞坏；自动化测试必须复用同一条连接。
+
+**验证**（repro2.robot + gdb_full_test.robot，均 include 真实 resc）：
+- repro2：单帧×3 口 + 连发 6×3 + 压力 50×3（共 399B 收 399B 回显）全 OK，
+  压力后 PC=0x0800CDD6、uwTick 持续走；
+- gdb_full_test：GDB halt/continue 风暴 ×50 下三口各 10 帧 → 10/10/10，
+  PC 正常。

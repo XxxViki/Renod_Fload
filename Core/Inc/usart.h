@@ -57,6 +57,8 @@ void process_Host_data();
 
 void Start_UART_Receive(void);
 void usart3_frame_handler(void);
+void uart4_frame_handler(void);
+HAL_StatusTypeDef uart4_transmit_dma(const uint8_t *pData, uint16_t Size);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

@@ -53,6 +53,7 @@
 /* USER CODE BEGIN 0 */
 extern void lpuart1_frame_handler(void);   /* usart.c：RTOF 帧到达处理 */
 extern void usart3_frame_handler(void);    /* usart.c：USART3 RTOF 帧到达处理 */
+extern void uart4_frame_handler(void);     /* usart.c：UART4 RTOF 帧到达处理 */
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -60,14 +61,18 @@ extern I2C_HandleTypeDef hi2c1;
 extern DMA_NodeTypeDef Node_LPDMA1_Channel0;
 extern DMA_QListTypeDef List_LPDMA1_Channel0;
 extern DMA_HandleTypeDef handle_LPDMA1_Channel0;
+extern DMA_NodeTypeDef Node_GPDMA1_Channel1;
+extern DMA_QListTypeDef List_GPDMA1_Channel1;
+extern DMA_HandleTypeDef handle_GPDMA1_Channel1;
 extern DMA_NodeTypeDef Node_GPDMA1_Channel0;
 extern DMA_QListTypeDef List_GPDMA1_Channel0;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel0;
 extern UART_HandleTypeDef hlpuart1;
+extern UART_HandleTypeDef huart4;
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart3;
 /* USER CODE BEGIN EV */
-
+extern DMA_HandleTypeDef handle_GPDMA1_Channel2;   /* UART4 TX DMA（GPDMA1 CH2） */
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -223,6 +228,20 @@ void GPDMA1_Channel0_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles GPDMA1 Channel 1 global interrupt.
+  */
+void GPDMA1_Channel1_IRQHandler(void)
+{
+  /* USER CODE BEGIN GPDMA1_Channel1_IRQn 0 */
+
+  /* USER CODE END GPDMA1_Channel1_IRQn 0 */
+  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel1);
+  /* USER CODE BEGIN GPDMA1_Channel1_IRQn 1 */
+
+  /* USER CODE END GPDMA1_Channel1_IRQn 1 */
+}
+
+/**
   * @brief This function handles I2C1 Event interrupt.
   */
 void I2C1_EV_IRQHandler(void)
@@ -284,6 +303,25 @@ void USART3_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles UART4 global interrupt.
+  */
+void UART4_IRQHandler(void)
+{
+  /* USER CODE BEGIN UART4_IRQn 0 */
+  /* RTOF（接收超时）= 帧结束：GPDMA1 CH1 循环链表接收下按计数器算长度处理 */
+  if (__HAL_UART_GET_FLAG(&huart4, UART_FLAG_RTOF))
+  {
+    __HAL_UART_CLEAR_FLAG(&huart4, UART_CLEAR_RTOF);
+    uart4_frame_handler();
+  }
+  /* USER CODE END UART4_IRQn 0 */
+  HAL_UART_IRQHandler(&huart4);
+  /* USER CODE BEGIN UART4_IRQn 1 */
+
+  /* USER CODE END UART4_IRQn 1 */
+}
+
+/**
   * @brief This function handles LPUART1 global interrupt.
   */
 void LPUART1_IRQHandler(void)
@@ -319,5 +357,13 @@ void LPDMA1_Channel0_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+/**
+  * @brief  UART4 TX DMA（GPDMA1 CH2）全局中断：发送完成/错误处理
+  * @note   手写新增（CubeMX 不生成 CH2 的 handler），startup 里 .weak 默认
+  *         已被此强符号覆盖。
+  */
+void GPDMA1_Channel2_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel2);
+}
 /* USER CODE END 1 */

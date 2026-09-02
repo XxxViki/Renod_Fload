@@ -51,6 +51,11 @@ usart3: UART.STM32F7_USART @ sysbus 0x40004800
 uart4: UART.STM32F7_USART @ sysbus 0x40004C00
     frequency: 160000000
     IRQ -> nvic0@64
+    // UART4_RX 走 GPDMA1 CH1（IRQ30）：每字节挂起通道中断 + 供钩子搬运
+    ReceiveDmaRequest -> nvic0@30
+    // 注意：该模型没有 TransmitDmaRequest 线（TX 用 DMA 时无请求线可挂），
+    //       UART4_TX=GPDMA1 CH2(IRQ31) 由 uart_tx_dma_hook.py 主动搬运 + tx_btn_31
+    //       触发 TC 中断，见 stm32u585_custom.resc 方法论第三节。
 
 uart5: UART.STM32F7_USART @ sysbus 0x40005000
     frequency: 160000000
@@ -69,6 +74,14 @@ gpdma1: Python.PythonPeripheral @ sysbus 0x40020000
     size: 0x1000
     initable: true
     filename: "E:/Project/Flod_Array/Renode/stm32u5_lpdma_stub.py"
+
+// TX DMA 的 TC 中断触发按钮：模型无 TransmitDmaRequest 线，Python 又写不了
+// 真实中断（见 stm32u5_lpdma_stub.py 坑6），故用一个 Button 走模型真实中断线，
+// 由 uart_tx_dma_hook.py 在搬运完成后 PressAndRelease 触发通道 TC 中断。
+// 命名约定：tx_btn_<IRQ号>；UART4_TX = GPDMA1 CH2 = IRQ31。
+// 新增 TX 通道时，照此加一条（IRQ 号查 resc 方法论第一节对照表）。
+tx_btn_31: Miscellaneous.Button @ sysbus
+    -> nvic0@31
 
 // LPDMA1 @ 0x46025000（4 通道）：寄存器 stub，配合钩子仿真 LPUART1_RX DMA
 // （Renode 无 GPDMA/LPDMA 模型：STM32WBA55_GPDMA 请求线被 FIFOL 拦死、

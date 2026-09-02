@@ -66,6 +66,17 @@
 # 13. 跨块帧回显被拆分：TC（块完成）中断常晚于 RTOF 处理，RxCpltCallback 里
 #     回显会提前消费读指针，把跨块帧拆成两段（数据没丢，帧序被打乱）
 #     → 循环模式下 RxCpltCallback 不回显，统一由 RTOF 按帧处理。
+# 14. 【坑11·致命】钩子字符串绝不能"包函数再调用"（exec chr(10).join(
+#     ('def _x():','  ...exec _f.read()','_x()')) 之类）：IronPython 函数内嵌
+#     exec 看不到 Renode 注入的 state/address/value/self，入口的 NameError
+#     分支全部落空 → 钩子静默 no-op（无任何报错日志！）→ RDR 无人读、
+#     ReceiveDmaRequest 线悬高 → 通道 IRQ 风暴饿死主循环：三口零回显、
+#     HAL_Delay 卡死（uwTick 停走）、PC 跑飞(0xFFFFFFA8)、GDB 拒连，全同一根因。
+#     正确形式：直接 "with open(r'...') as _f: exec _f.read()"；异常防护写进
+#     脚本模块级整体 try/except（uart_dma_hook.py 入口已内置），不靠外层包裹。
+# 15. ServerSocketTerminal 每端口只服务一个客户端：已有连接时，后续连接被
+#     无视且会把监听搞挂（再连一律 ConnectionRefused）。串口助手/PuTTY 必须
+#     是该端口唯一客户端；自动化测试要复用同一条连接发收全部流量。
 # ============================================================================
 # ----------------------------------------------------------------------------
 try:
