@@ -51,9 +51,9 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-extern void lpuart1_frame_handler(void);   /* usart.c：RTOF 帧到达处理 */
-extern void usart3_frame_handler(void);    /* usart.c：USART3 RTOF 帧到达处理 */
-extern void uart4_frame_handler(void);     /* usart.c：UART4 RTOF 帧到达处理 */
+extern void lpuart1_frame_handler(void);   /* Communication.c：LPUART1 RTOF 帧到达处理 */
+extern void usart3_frame_handler(void);    /* Communication.c：USART3（电机）RTOF 帧到达处理 */
+extern void uart4_frame_handler(void);     /* Communication.c：UART4（罗盘）RTOF 帧到达处理 */
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/

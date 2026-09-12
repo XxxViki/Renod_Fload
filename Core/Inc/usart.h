@@ -53,11 +53,7 @@ void MX_USART1_UART_Init(void);
 void MX_USART3_UART_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-void process_Host_data();
-
-void Start_UART_Receive(void);
-void usart3_frame_handler(void);
-void uart4_frame_handler(void);
+/* 通讯应用层（帧处理/启动接收/主循环任务）声明已移至 Communication.h */
 HAL_StatusTypeDef uart4_transmit_dma(const uint8_t *pData, uint16_t Size);
 /* USER CODE END Prototypes */
 

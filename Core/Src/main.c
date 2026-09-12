@@ -33,7 +33,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "Communication.h"
+#include "Analog.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -114,9 +115,7 @@ int main(void)
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   Start_UART_Receive();
-
-  uint8_t lp[] = {"send -BBB-  Lpuart1 \r\n"};
-  uint8_t uart[] = {"send -SSS- uart1 \r\n"};
+  Log_Print("Flod_Array boot, log on USART1(PB6,115200)");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -127,20 +126,12 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-
-//	  HAL_UART_Transmit(&hlpuart1,lp,sizeof(lp),100);
-//	  HAL_Delay(1000);
-//	  HAL_UART_Transmit(&huart1,uart,sizeof(uart),100);
-//	  HAL_Delay(1000);
-
-//	  HAL_UART_Transmit_IT(&hlpuart1,lp,sizeof(lp));
-//	  HAL_Delay(1000);
-
-//
-	  HAL_UART_Transmit_IT(&huart1,uart,sizeof(uart));
-	  HAL_Delay(1000);
-
+	  //声通/主机通讯
 	  process_Host_data();
+	  //电机通讯
+	  process_Motor_data();
+	  //罗盘
+	  process_Tcm_data();
   }
   /* USER CODE END 3 */
 }
